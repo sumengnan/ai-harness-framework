@@ -100,9 +100,23 @@ class AgentLoop:
         # 循环/停滞检测窗口：连续 N 步相同工具调用签名即判打转并中止；<2 关闭。
         self._loop_window = loop_detect_window
 
-    async def run(self, user_message: str) -> AsyncIterator[Event]:
+    async def run(self, user_message: str | None = None, *,
+                  messages: list[Message] | None = None) -> AsyncIterator[Event]:
+        """启动一次 run。
+
+        user_message：单条用户消息（旧用法，保持不变）。
+        messages：完整的初始消息列表——调用方已经组装好上下文时使用
+        （如把上一步的结构化诊断作为 assistant/user 轮次一并带入）。
+        两者必须且只能给一个。
+        """
+        if (user_message is None) == (messages is None):
+            raise ValueError("run() 需要 user_message 或 messages 之一，且不能同时提供")
         state = RunState(run_id=self._new_run_id())
-        state.append(Message(role=Role.USER, content=user_message))
+        if messages is None:
+            state.append(Message(role=Role.USER, content=user_message))
+        else:
+            for m in messages:
+                state.append(m)
         async for ev in self._run_from(state, resuming=False):
             yield ev
 

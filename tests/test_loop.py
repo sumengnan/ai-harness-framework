@@ -280,3 +280,49 @@ async def test_wall_budget_breach_emits_run_error(make_mock):
     events = [e async for e in loop.run("go")]
     assert isinstance(events[-1], RunError)
     assert "时间" in events[-1].error
+
+
+from harness.types import Message, Role
+
+
+async def test_run_accepts_initial_messages(make_mock, text_turn):
+    """传入完整初始消息：全部进入状态，且顺序保持。"""
+    seen: list[list] = []
+
+    class _Recording:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def stream(self, messages, tools):
+            seen.append(list(messages))
+            async for c in self._inner.stream(messages, tools):
+                yield c
+
+    loop = _build_loop(_Recording(make_mock([text_turn("ok")])))
+    initial = [
+        Message(role=Role.USER, content="诊断如下"),
+        Message(role=Role.ASSISTANT, content="收到"),
+        Message(role=Role.USER, content="请修复"),
+    ]
+    events = [ev async for ev in loop.run(messages=initial)]
+    assert isinstance(events[-1], RunFinished)
+    # ContextManager 在最前插入 system，其后应为传入的三条
+    sent = seen[0]
+    assert [m.role for m in sent[1:]] == [Role.USER, Role.ASSISTANT, Role.USER]
+    assert [m.content for m in sent[1:]] == ["诊断如下", "收到", "请修复"]
+
+
+async def test_run_still_accepts_plain_string(make_mock, text_turn):
+    """旧用法不变。"""
+    loop = _build_loop(make_mock([text_turn("ok")]))
+    events = [ev async for ev in loop.run("hi")]
+    assert isinstance(events[-1], RunFinished)
+
+
+async def test_run_requires_exactly_one_input(make_mock, text_turn):
+    """两者都不给或都给，都是调用方错误。"""
+    loop = _build_loop(make_mock([text_turn("ok")]))
+    with pytest.raises(ValueError):
+        [ev async for ev in loop.run()]
+    with pytest.raises(ValueError):
+        [ev async for ev in loop.run("hi", messages=[Message(role=Role.USER, content="x")])]
