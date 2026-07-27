@@ -5,9 +5,9 @@ on:
     types: [published]
 
 jobs:
-  # 发布前必须先绿：复用 CI 的同一份测试矩阵
+  # 发布前必须先绿：复用与 CI 相同的测试矩阵
   test:
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/tests.yml
 
   publish:
     needs: test

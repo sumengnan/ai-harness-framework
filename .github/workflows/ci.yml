@@ -5,8 +5,6 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  # 供 release.yml 复用：发布前先跑同一套测试
-  workflow_call:
 
 # 同一分支上新的 push 取消旧的运行；master 上不取消，保证每个提交都有结论
 concurrency:
@@ -15,34 +13,12 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    uses: ./.github/workflows/tests.yml
 
-    steps:
-      - uses: actions/checkout@v7
-
-      # setup-uv 不发布浮动 major 标签（最高只到 v7），这里钉具体版本
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      # --locked：uv.lock 与 pyproject.toml 不一致时直接失败，而不是悄悄改锁
-      # --all-extras：内核的可选依赖（memory / mcp / browser…）都要覆盖到
-      - name: Install
-        run: uv sync --locked --all-extras --python ${{ matrix.python-version }}
-
-      - name: Test
-        run: uv run --no-sync pytest -q
-
-  # 测试全绿后给当前 pyproject 版本打 tag。只在 master 的 push 上跑：
-  # PR 不打 tag，被 release.yml 复用时（event 是 release）也会跳过。
+  # 测试全绿后给当前 pyproject 版本打 tag。PR 不打。
   tag:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
