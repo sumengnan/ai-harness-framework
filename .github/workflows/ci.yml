@@ -37,3 +37,36 @@ jobs:
 
       - name: Test
         run: uv run --no-sync pytest -q
+
+  # 测试全绿后给当前 pyproject 版本打 tag。只在 master 的 push 上跑：
+  # PR 不打 tag，被 release.yml 复用时（event 是 release）也会跳过。
+  tag:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag version
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+          tag="v$version"
+
+          # 版本没变的普通提交就跳过，而不是失败
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag 已存在，跳过"
+            exit 0
+          fi
+
+          git config user.name "$GH_ACTOR"
+          git config user.email "${GH_ACTOR_ID}+${GH_ACTOR}@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          echo "已创建 $tag"

@@ -30,7 +30,8 @@ jobs:
       # release tag 与 pyproject 版本对不上就停下，避免发出错版本号
       - name: Check tag matches version
         run: |
-          version="$(uv version --short)"
+          set -euo pipefail
+          version="$(python3 -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
           tag="${GITHUB_REF_NAME#v}"
           if [ "$version" != "$tag" ]; then
             echo "::error::release tag '$GITHUB_REF_NAME' != pyproject version '$version'"
