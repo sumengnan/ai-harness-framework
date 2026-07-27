@@ -10,20 +10,29 @@ from .base import ExecResult, resolve_in_workspace
 
 
 class LocalSandbox:
-    """本地临时目录 + 子进程。仅测试/离线开发用——不是安全边界。"""
+    """本地目录 + 子进程。仅测试/离线开发用——不是安全边界。
 
-    def __init__(self) -> None:
-        self.workspace = ""
+    workspace=None：自建临时目录，close() 时删除（默认，行为不变）。
+    workspace=路径：接管既有目录，close() **不删**——用于在 git worktree
+    这类由调用方管理生命周期的目录上工作。
+    """
+
+    def __init__(self, workspace: str | None = None) -> None:
+        self._adopted = workspace is not None
+        self.workspace = workspace or ""
         self._started = False
 
     async def start(self) -> None:
         if self._started:
             return
-        self.workspace = tempfile.mkdtemp(prefix="harness_sbx_")
+        if not self._adopted:
+            self.workspace = tempfile.mkdtemp(prefix="harness_sbx_")
         self._started = True
 
     async def close(self) -> None:
-        if self._started and self.workspace and os.path.isdir(self.workspace):
+        # 接管的目录归调用方所有，绝不删除
+        if (not self._adopted and self._started
+                and self.workspace and os.path.isdir(self.workspace)):
             shutil.rmtree(self.workspace, ignore_errors=True)
         self._started = False
 
