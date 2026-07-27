@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  # 发布前必须先绿：复用 CI 的同一份测试矩阵
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ai-harness-framework
+    permissions:
+      id-token: write # PyPI trusted publishing（OIDC），不需要 API token
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # release tag 与 pyproject 版本对不上就停下，避免发出错版本号
+      - name: Check tag matches version
+        run: |
+          version="$(uv version --short)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::release tag '$GITHUB_REF_NAME' != pyproject version '$version'"
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
