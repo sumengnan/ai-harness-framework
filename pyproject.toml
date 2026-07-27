@@ -1,0 +1,87 @@
+[project]
+name = "ai-harness-framework"
+version = "0.1.0"
+description = "最小 Agent 运行时内核：模型接入、工具循环、预算、可观测、持久化"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "sumengnan" }]
+keywords = ["agent", "llm", "harness", "tool-calling", "openai-compatible"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+# 核心：跑通「模型 → 工具 → 循环 → 预算 → 事件」所必需的最小集合。
+# 判定依据是模块级 import：惰性 import（函数体内 / try 块内）一律下放到 extras，
+# 这样只用内核的消费者不必被 docker / sqlite-vec / mcp 这类重依赖拖累。
+dependencies = [
+    "openai>=1.40",             # llm/openai_compat.py 模块级
+    "pydantic>=2.7",            # tools/base.py、config.py 模块级
+    "pydantic-settings>=2.3",   # config.py 模块级
+    "opentelemetry-api>=1.25",  # loop/agent_loop.py、telemetry/tracer.py 模块级
+]
+
+[project.optional-dependencies]
+# 真正导出 span（不装则 opentelemetry-api 退化为 no-op tracer，内核照常运行）
+telemetry = [
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+]
+# 精确 token 计数；不装则 usage.py 走估算回退
+tokenizer = ["tiktoken>=0.7"]
+# Docker 沙箱（harness.sandbox.docker）；LocalSandbox 不需要
+sandbox-docker = ["docker[ssh]>=7.0"]
+# harness.tools.builtins.http_tool
+http = ["httpx>=0.27"]
+# harness.browser 正文提取（playwright 在容器内，不是宿主依赖）
+browser = ["trafilatura>=1.9"]
+# harness.mcp
+mcp = ["mcp>=1.12.4,<2.0"]
+# harness.skills.registry / harness.orchestration.roster_loader 读 YAML
+skills = ["pyyaml>=6.0"]
+orchestration = ["pyyaml>=6.0"]
+# harness.memory：向量存储 + 语义分块 + 重排
+memory = [
+    "sqlite-vec>=0.1.6",
+    "semantic-text-splitter>=0.32.0",
+    "httpx>=0.27",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+    "tree-sitter-java>=0.23.5",
+    "tree-sitter-go>=0.25.0",
+]
+# 全部特性（ai-learning-helper 这类完整消费者用）
+all = [
+    "ai-harness-framework[telemetry,tokenizer,sandbox-docker,http,browser,mcp,skills,orchestration,memory]",
+]
+
+[project.urls]
+Homepage = "https://github.com/sumengnan/ai-harness-framework"
+Repository = "https://github.com/sumengnan/ai-harness-framework"
+Issues = "https://github.com/sumengnan/ai-harness-framework/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harness"]
