@@ -1,5 +1,14 @@
 # ai-harness-framework
 
+[![PyPI](https://img.shields.io/pypi/v/ai-harness-framework.svg)](https://pypi.org/project/ai-harness-framework/)
+[![Python](https://img.shields.io/pypi/pyversions/ai-harness-framework.svg)](https://pypi.org/project/ai-harness-framework/)
+[![CI](https://github.com/sumengnan/ai-harness-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/sumengnan/ai-harness-framework/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/ai-harness-framework.svg)](#license)
+
+```bash
+pip install ai-harness-framework
+```
+
 最小 Agent 运行时内核。把"调模型 → 调工具 → 再调模型"这个循环，连同它在真实场景里必然会撞上的那些失败模式，一起做成一个可复用的包。
 
 不是 agent 框架，不替你写 prompt，不预设你的业务形状。它只负责一件事：**让一个随机的模型，在一个确定性的壳子里可靠地干活。**
@@ -30,11 +39,19 @@ Agent 循环本身只有几十行，难的是它必须扛住的事。下面每�
 
 ## 安装
 
-核心只有 4 个依赖（`openai` / `pydantic` / `pydantic-settings` / `opentelemetry-api`）。重依赖全部下放到 extras，按需装：
+需要 Python ≥ 3.11。核心只有 4 个依赖（`openai` / `pydantic` / `pydantic-settings` / `opentelemetry-api`），重依赖全部下放到 extras，按需装：
 
 ```bash
-pip install ai-harness-framework                    # 内核：模型 + 工具 + 循环 + 预算 + 事件
-pip install "ai-harness-framework[all]"             # 全部特性
+pip install ai-harness-framework                       # 内核：模型 + 工具 + 循环 + 预算 + 事件
+pip install "ai-harness-framework[memory,mcp]"         # 只要某几个特性
+pip install "ai-harness-framework[all]"                # 全部特性
+```
+
+用 uv 的话：
+
+```bash
+uv add ai-harness-framework
+uv add "ai-harness-framework[all]"
 ```
 
 | Extra | 装什么 | 用到的模块 |
