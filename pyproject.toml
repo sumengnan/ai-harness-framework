@@ -1,6 +1,6 @@
 [project]
 name = "ai-harness-framework"
-version = "0.0.1"
+version = "0.0.2"
 description = "最小 Agent 运行时内核：模型接入、工具循环、预算、可观测、持久化"
 readme = "README.md"
 requires-python = ">=3.11"
