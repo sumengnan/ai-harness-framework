@@ -173,7 +173,7 @@ asyncio.run(main())
 
 ```bash
 uv sync --all-extras --group dev
-uv run pytest                # 657 passed, 3 skipped
+uv run pytest                # 671 passed, 3 skipped
 ```
 
 Python ≥ 3.11。

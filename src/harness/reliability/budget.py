@@ -36,10 +36,23 @@ class BudgetTracker:
         self._clock = clock
         self._start: float | None = None
         self._total_tokens = 0
+        self._base_wall = 0.0     # 断点续跑时带回来的、之前已消耗的墙钟
 
     def start(self) -> None:
         if self._start is None:   # 幂等：只在首次设墙钟基准（多 agent 共享 budget）
             self._start = self._clock()
+
+    def restore(self, total_tokens: int = 0, wall_seconds: float = 0.0) -> None:
+        """把之前那次 run 已消耗的量装回来，供 resume 接着算。
+
+        必须在 start() 之前调用（start() 之后调用只影响后续累计，墙钟基准已定）。
+        崩溃到重启之间的停机时间**不计入**——只累计真正在跑的时间。
+
+        只用于顶层 resume：共享 budget 的子 agent 不该调用它，否则会覆盖兄弟
+        节点已累计的量。
+        """
+        self._total_tokens = total_tokens
+        self._base_wall = wall_seconds
 
     def add_usage(self, usage: Usage) -> None:
         self._total_tokens += usage.total_tokens
@@ -48,10 +61,17 @@ class BudgetTracker:
         if self._max_tokens is not None and self._total_tokens > self._max_tokens:
             raise BudgetExceeded(f"token 预算超限：{self._total_tokens} > {self._max_tokens}")
         if self._max_wall is not None and self._start is not None:
-            elapsed = self._clock() - self._start
+            elapsed = self.elapsed_seconds
             if elapsed > self._max_wall:
                 raise BudgetExceeded(f"时间预算超限：{elapsed:.1f}s > {self._max_wall}s")
 
     @property
     def total_tokens(self) -> int:
         return self._total_tokens
+
+    @property
+    def elapsed_seconds(self) -> float:
+        """已消耗墙钟：本次 run 的 + restore() 带回来的。未 start() 则只有后者。"""
+        if self._start is None:
+            return self._base_wall
+        return self._base_wall + (self._clock() - self._start)

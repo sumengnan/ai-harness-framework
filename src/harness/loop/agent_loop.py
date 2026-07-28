@@ -139,12 +139,24 @@ class AgentLoop:
 
     async def _run_from(self, state: RunState, resuming: bool) -> AsyncIterator[Event]:
         if self._budget:
+            # resume：先把快照里已消耗的量装回去，再起墙钟基准。不装回来的话，
+            # 每次续跑都等于重新发一份满预算，"最多花 N tokens" 就形同虚设。
+            if resuming:
+                self._budget.restore(state.tokens_used, state.wall_seconds_used)
             self._budget.start()
         # 回填 run_id 到审批上下文（若有），使 ApprovalRequired 事件自洽携带 run_id
         from ..approval import set_run_id
         set_run_id(state.run_id)
         if not resuming:
             yield RunStarted(run_id=state.run_id)
+
+        def save_snapshot() -> None:
+            """步边界存快照。存之前把墙钟消耗刷进 state，让 resume 能接着算。"""
+            if not self._checkpoint_store:
+                return
+            if self._budget:
+                state.wall_seconds_used = self._budget.elapsed_seconds
+            self._checkpoint_store.save(state)
 
         recent_sigs: list = []          # 最近各步的工具调用签名，供循环检测
         loop_nudges = 0                 # 已注入纠偏次数；纠偏后仍循环即中止
@@ -202,6 +214,7 @@ class AgentLoop:
                     latency_ms = (time.monotonic() - t0) * 1000
                     if usage is not None:
                         cost = effective_cost(usage, self._model_name, self._price_map)
+                        state.tokens_used += usage.total_tokens  # 跟着快照走，供 resume 续算
                         if self._budget:
                             self._budget.add_usage(usage)
                         yield ModelUsage(usage=usage, cost_usd=cost, attempts=attempts,
@@ -255,8 +268,7 @@ class AgentLoop:
                                     "请换个思路——改用不同的参数或工具，或如果掌握的信息已足够，"
                                     "就直接给出最终答复；不要再重复同样的调用。")))
                                 yield StepFinished(step=step)
-                                if self._checkpoint_store:
-                                    self._checkpoint_store.save(state)
+                                save_snapshot()
                                 continue
                             # 纠偏后仍重复 → 中止
                             yield RunError(
@@ -289,7 +301,6 @@ class AgentLoop:
                             state.append(fm)
                         yield ToolFinished(result=result)
                     yield StepFinished(step=step)
-                    if self._checkpoint_store:  # 步边界存快照
-                        self._checkpoint_store.save(state)
+                    save_snapshot()
 
             yield RunError(error=f"达到 max_steps 上限 ({self._max_steps})")

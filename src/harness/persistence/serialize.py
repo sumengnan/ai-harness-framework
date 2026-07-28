@@ -38,13 +38,18 @@ def message_from_dict(d: dict) -> Message:
 
 def runstate_to_dict(s: RunState) -> dict:
     return {"run_id": s.run_id, "step": s.step,
-            "messages": [message_to_dict(m) for m in s.messages]}
+            "messages": [message_to_dict(m) for m in s.messages],
+            "tokens_used": s.tokens_used,
+            "wall_seconds_used": s.wall_seconds_used}
 
 
 def runstate_from_dict(d: dict) -> RunState:
     st = RunState(run_id=d["run_id"])
     st.step = d["step"]
     st.messages = [message_from_dict(m) for m in d["messages"]]
+    # .get：这两个字段是后加的，老快照没有，按 0 读回来而不是崩
+    st.tokens_used = d.get("tokens_used", 0)
+    st.wall_seconds_used = d.get("wall_seconds_used", 0.0)
     return st
 
 
