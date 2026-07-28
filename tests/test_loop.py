@@ -1,3 +1,5 @@
+import contextlib
+
 import pytest
 
 from harness.loop.agent_loop import AgentLoop, _accumulate, _finalize
@@ -326,3 +328,54 @@ async def test_run_requires_exactly_one_input(make_mock, text_turn):
         [ev async for ev in loop.run()]
     with pytest.raises(ValueError):
         [ev async for ev in loop.run("hi", messages=[Message(role=Role.USER, content="x")])]
+
+
+class _SpySpan:
+    """记录不了什么，只需接住 _run_from 里对 span 的全部调用，不崩即可。"""
+
+    def set_attribute(self, key, value):
+        pass
+
+    def set_status(self, status):
+        pass
+
+    def add_event(self, name, attributes=None):
+        pass
+
+
+class _SpyTracer:
+    """间谍 tracer：记录每个 span 的进入/退出顺序，用于验证生成器关闭时机。"""
+
+    def __init__(self):
+        self.events: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def start_as_current_span(self, name):
+        self.events.append(("enter", name))
+        try:
+            yield _SpySpan()
+        finally:
+            self.events.append(("exit", name))
+
+
+async def test_run_aclose_closes_inner_generator(make_mock, tool_turn):
+    """壳生成器 run() 被 aclose() 时必须一并终结内层 _run_from。
+
+    否则 run span 与纠偏升温的还原（ExitStack）要等到事件循环回收异步生成器
+    才会发生，时机不确定——这正是下游成本闸 await stream.aclose() 撞到的问题。
+    """
+    spy = _SpyTracer()
+    reg = ToolRegistry()
+    reg.register(CalculatorTool())
+    loop = AgentLoop(
+        client=make_mock([tool_turn("calculator", '{"expression": "1+1"}', call_id="c1")]),
+        registry=reg, context=ContextManager(system_prompt="s"),
+        max_steps=10, run_id_factory=lambda: "run-test", tracer=spy,
+    )
+    gen = loop.run("hi")
+    await gen.__anext__()  # RunStarted：此时还没进入 run span 的 with
+    await gen.__anext__()  # StepStarted：run span 已进入，此刻挂起在 with 内部
+    assert ("enter", "run") in spy.events
+    assert ("exit", "run") not in spy.events  # 还没关，run span 应仍处于打开状态
+    await gen.aclose()
+    assert ("exit", "run") in spy.events, "关掉外层壳没有终结内层 _run_from"

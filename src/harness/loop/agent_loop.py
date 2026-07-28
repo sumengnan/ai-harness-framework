@@ -117,8 +117,13 @@ class AgentLoop:
         else:
             for m in messages:
                 state.append(m)
-        async for ev in self._run_from(state, resuming=False):
-            yield ev
+        # 用 aclosing 包一层：调用方 aclose() 这层壳时，async for 本身不会关闭
+        # 正在遍历的内层 _run_from——真正的清理（span、纠偏升温回滚）全在内层的
+        # ExitStack/with 里，不主动 aclose 内层就要等事件循环回收异步生成器，
+        # 时机不确定（下游成本闸提前 aclose() 就会撞上这个）。
+        async with contextlib.aclosing(self._run_from(state, resuming=False)) as gen:
+            async for ev in gen:
+                yield ev
 
     async def resume(self, run_id: str) -> AsyncIterator[Event]:
         """从 checkpoint 续跑 run_id。
@@ -134,8 +139,10 @@ class AgentLoop:
         if state is None:
             yield RunError(error=f"无 checkpoint：{run_id}")
             return
-        async for ev in self._run_from(state, resuming=True):
-            yield ev
+        # 同 run()：aclosing 确保壳被 aclose() 时内层 _run_from 一并终结。
+        async with contextlib.aclosing(self._run_from(state, resuming=True)) as gen:
+            async for ev in gen:
+                yield ev
 
     async def _run_from(self, state: RunState, resuming: bool) -> AsyncIterator[Event]:
         if self._budget:
