@@ -1,3 +1,5 @@
+import contextlib
+
 from harness.loop.agent_loop import AgentLoop
 from harness.context.manager import ContextManager
 from harness.tools.base import ToolRegistry
@@ -172,3 +174,55 @@ async def test_budget_not_carried_without_snapshot_field(text_turn):
     st = runstate_from_dict(json.loads(json.dumps(old)))
     assert st.tokens_used == 0 and st.wall_seconds_used == 0.0
     assert st.step == 1 and st.messages[0].content == "hi"
+
+
+class _SpySpan:
+    """记录不了什么，只需接住 _run_from 里对 span 的全部调用，不崩即可。"""
+
+    def set_attribute(self, key, value):
+        pass
+
+    def set_status(self, status):
+        pass
+
+    def add_event(self, name, attributes=None):
+        pass
+
+
+class _SpyTracer:
+    """间谍 tracer：记录每个 span 的进入/退出顺序，用于验证生成器关闭时机。"""
+
+    def __init__(self):
+        self.events: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def start_as_current_span(self, name):
+        self.events.append(("enter", name))
+        try:
+            yield _SpySpan()
+        finally:
+            self.events.append(("exit", name))
+
+
+async def test_resume_aclose_closes_inner_generator(make_mock, text_turn):
+    """resume() 与 run() 是同一种壳，须一样能在 aclose() 时终结内层 _run_from。"""
+    spy = _SpyTracer()
+    cs = CheckpointStore(":memory:")
+    st = RunState(run_id="r1")
+    st.step = 1
+    st.append(Message(role=Role.USER, content="算 1+1"))
+    st.append(Message(role=Role.ASSISTANT, content=None,
+                      tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})]))
+    st.append(Message(role=Role.TOOL, content="2", tool_call_id="c1"))
+    cs.save(st)
+
+    loop = AgentLoop(client=make_mock([text_turn("最终答案 2")]),
+                     registry=_reg(), context=ContextManager("s"), max_steps=5,
+                     checkpoint_store=cs, tracer=spy)
+    gen = loop.resume("r1")
+    # resume 不发 RunStarted，第一个事件（StepStarted）产生时 run span 已进入且挂起在 with 内
+    await gen.__anext__()
+    assert ("enter", "run") in spy.events
+    assert ("exit", "run") not in spy.events
+    await gen.aclose()
+    assert ("exit", "run") in spy.events, "resume 的壳被 aclose 时未终结内层 _run_from"
