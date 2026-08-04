@@ -29,6 +29,7 @@ Agent 循环本身只有几十行，难的是它必须扛住的事。下面每�
 | 工具调用参数不是合法 JSON | 同上，回填明确错误让它重发 | `loop/agent_loop.py` |
 | 模型不肯停，一直调工具 | `max_steps` 硬上限 | `loop/agent_loop.py` |
 | 模型原地打转，反复同参调同一工具 | 签名窗口检测 → 注入纠偏 **并同时升温** → 仍重复则中止 | `loop/agent_loop.py` |
+| 模型换着花样撞同一堵墙（每次调用都不同，每次结果都一样） | 结果窗口检测 → 注入纠偏 → 仍不变则中止 | `loop/agent_loop.py` |
 | token / 墙钟花超 | 步边界检查，超限即中止 | `reliability/budget.py` |
 | 工具超时或抛异常 | 兜成 `is_error` 结果，不让单个工具搞崩整个 run | `tools/base.py` |
 | 端点 200 但空产出（内容安全拦截 / 截断） | 记 warning 留证，避免静默失败无从定位 | `llm/openai_compat.py` |
@@ -111,7 +112,7 @@ async def main() -> None:
         model_name=config.model,
         max_steps=10,
         budget=BudgetTracker(max_tokens=100_000, max_wall_seconds=120),
-        loop_detect_window=3,        # 连续 3 步同参调同一工具 → 判打转
+        loop_detect_window=3,        # 连续 3 步同参调同一工具、或同一工具连续 3 次返回相同结果 → 判停滞
     )
 
     async for ev in loop.run("北京天气怎么样？"):

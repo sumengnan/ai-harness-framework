@@ -70,6 +70,26 @@ def _canonical_args(args) -> str:
         return str(args)
 
 
+def _result_fingerprint(result) -> str:
+    """工具结果的比较指纹，供结果停滞检测用。
+
+    用 `for_model()` 而不是 `content`：那才是**模型眼里**的结果。机读 marker
+    （〔下载ID:x〕之类）只进事件与落库、不进上下文，而它们常带自增 id ——
+    按 content 比的话，模型看到的两段一模一样，指纹却每次都不同，这道检测就
+    永远不会响。判据必须和「模型有没有拿到新信息」对齐。
+
+    带上 is_error：同一段文本作为成功返回和作为错误返回，对模型是两件事。
+
+    不做哈希，直接留原文：这个字符串只在内存里跟上一次比一次，省下的那点
+    内存不值得换掉「出问题时能直接打印出来看」。
+    """
+    try:
+        body = result.for_model()
+    except Exception:                       # noqa: BLE001 —— 指纹算不出不该拖垮整轮
+        body = str(getattr(result, "content", ""))
+    return f"{bool(getattr(result, 'is_error', False))}\x00{body}"
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -168,6 +188,11 @@ class AgentLoop:
         recent_sigs: list = []          # 最近各步的工具调用签名，供循环检测
         loop_nudges = 0                 # 已注入纠偏次数；纠偏后仍循环即中止
         nudge_tmp_token = None          # 纠偏时的升温 token（见下方注入处），finally 必还原
+        # 结果停滞检测的状态：工具名 → (上一次结果的指纹, 连续相同了几次)。
+        # 与签名检测**分开计数**：那一层问「你是不是在重复同一个动作」，这一层问
+        # 「你做的这些动作有没有产生任何区别」——后者才是「换着花样撞同一堵墙」。
+        last_results: dict[str, tuple[str, int]] = {}
+        stall_nudges = 0                # 这一层自己的纠偏次数，同样是「先提醒后中止」
         # ExitStack 兜住纠偏升温的还原：run() 有多个 return 出口（正常结束/循环中止/预算超限），
         # 逐个补 reset 迟早漏一个，而漏了就会把升温漏给调用方的上下文。
         with contextlib.ExitStack() as cleanup, \
@@ -284,6 +309,7 @@ class AgentLoop:
                             return
 
                     yield ToolCallRequested(tool_calls=tool_calls)
+                    stalled_tool: str | None = None   # 本步是否要在末尾追一句提醒
                     for f in finalized:
                         tc = f.call
                         yield ToolStarted(tool_call=tc)
@@ -307,6 +333,47 @@ class AgentLoop:
                         for fm in result.follow_up:
                             state.append(fm)
                         yield ToolFinished(result=result)
+                        # 结果停滞：**同一个工具连续 N 次返回逐字相同的结果**。
+                        #
+                        # 与上面那道签名检测互补，漏洞就在它们之间：模型每次调用
+                        # 的参数都不一样（签名各异，那一层不响），而每次拿回的结果
+                        # 完全一样。实测（2026-08-04，aifix 修一个真 bug）：九次
+                        # 改同一个函数、九次跑测试、九次拿回逐字相同的失败输出，
+                        # 一路烧到 token 预算耗尽。**换着花样撞同一堵墙，和原地
+                        # 不动一样卡住，而且更贵——它看起来像在推进。**
+                        #
+                        # 判据只看结果不看参数：「我做的事有没有产生区别」这个
+                        # 问题，答案只在结果里。
+                        if self._loop_window >= 2:
+                            fp = _result_fingerprint(result)
+                            prev, streak = last_results.get(tc.name, ("", 0))
+                            streak = streak + 1 if fp == prev else 1
+                            last_results[tc.name] = (fp, streak)
+                            if streak >= self._loop_window:
+                                run_span.set_attribute("harness.result_stalled", True)
+                                # 重置连击：让提醒之后的行为重新计数，不然下一步
+                                # 必然再次命中，「先提醒后中止」就退化成直接中止。
+                                last_results[tc.name] = (fp, 0)
+                                if stall_nudges < 1:
+                                    stall_nudges += 1
+                                    stalled_tool = tc.name
+                                else:
+                                    yield RunError(
+                                        error=f"检测到结果停滞：提醒之后，「{tc.name}」"
+                                              f"仍连续 {self._loop_window} 次返回"
+                                              f"完全相同的结果，已中止")
+                                    return
+                    # 提醒接在**本步所有工具结果之后**，不在循环体里发：一步里可能
+                    # 有多个工具调用，插在中间会把 tool_calls 与 tool 结果的配对切断，
+                    # 那是一条模型端会直接拒收的消息序列。
+                    if stalled_tool is not None:
+                        state.append(Message(role=Role.USER, content=(
+                            f"系统提示：你已连续多次调用「{stalled_tool}」，"
+                            f"每次的**结果都完全相同**——尽管你每次的调用并不一样。"
+                            f"这说明你做的改动没有产生任何区别，继续沿这个方向调整"
+                            f"不会有结果。请退回去重新判断：是不是有一个前提搞错了？"
+                            f"（比如你以为的数据格式、字段名、或某个函数的实际行为）")))
+                        stalled_tool = None
                     yield StepFinished(step=step)
                     save_snapshot()
 

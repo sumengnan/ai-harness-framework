@@ -379,3 +379,117 @@ async def test_run_aclose_closes_inner_generator(make_mock, tool_turn):
     assert ("exit", "run") not in spy.events  # 还没关，run span 应仍处于打开状态
     await gen.aclose()
     assert ("exit", "run") in spy.events, "关掉外层壳没有终结内层 _run_from"
+
+
+# ---------------------------------------------------------------- 结果停滞
+#
+# 签名检测漏掉的那一类：**每次调用都不一样，每次结果都一样**。
+#
+# 真实来历（2026-08-04，aifix 在 ai-learning-helper 上的一次真跑）：模型九次
+# 改同一个函数、九次跑测试，九次拿回**逐字相同**的失败输出。九次的 edit_file
+# 参数各不相同，于是签名检测一次都没响，它一路烧到 token 预算耗尽（343K）。
+#
+# 换着花样撞同一堵墙，和原地不动一样卡住，而且更贵 —— 它看起来像在推进。
+
+
+def _same_result_turns(tool_turn, n):
+    """n 步：表达式每次都不同，算出来的结果都是 2。签名各异、结果相同。"""
+    exprs = ["1+1", "0+2", "4-2", "6-4", "1*2", "8-6", "2/1", "3-1"]
+    return [tool_turn("calculator", '{"expression": "%s"}' % exprs[i % len(exprs)],
+                      call_id=f"c{i}") for i in range(n)]
+
+
+class _RecordingMock:
+    """记下每一轮送进模型的消息 —— 「提醒有没有真的送到模型眼前」只能这样验。
+
+    断言「没有中止」是不够的：什么都不实现时它同样不中止，那条测试会假绿。
+    """
+
+    def __init__(self, turns):
+        self._turns, self._i = list(turns), 0
+        self.seen: list[list] = []
+
+    async def stream(self, messages, tools):
+        self.seen.append(list(messages))
+        turn = self._turns[self._i]
+        self._i += 1
+        for chunk in turn:
+            yield chunk
+
+
+async def test_identical_results_from_varied_calls_get_nudged(
+        tool_turn, text_turn):
+    """连续 N 次拿回逐字相同的结果 → 出声提醒，但**不中止**。
+
+    先提醒不中止，与签名检测同一个形状：模型可能只是需要被告知
+    「你做的事没有改变任何东西」，那句话它自己看不出来 —— 而确定性代码
+    一次字符串比较就能算出来。
+    """
+    client = _RecordingMock(_same_result_turns(tool_turn, 3)
+                            + [text_turn("换个思路")])
+    loop = _loop_with_detect(client, window=3)
+    events = await _collect(loop, "算")
+
+    assert isinstance(events[-1], RunFinished)          # 给了机会，没有过早中止
+    assert events[-1].message.content == "换个思路"
+    # 三次调用都**真的执行了** —— 与签名检测不同，结果要执行完才知道
+    assert sum(isinstance(e, ToolFinished) for e in events) == 3
+
+    # 提醒真的进了下一轮的上下文，而且说清了「相同的是结果，不是调用」
+    last = "\n".join(str(m.content or "") for m in client.seen[-1])
+    assert "系统提示" in last, last
+    assert "结果" in last, last
+    assert "calculator" in last, last
+
+
+async def test_identical_results_abort_after_the_nudge(make_mock, tool_turn):
+    """提醒之后还是同一个结果 → 中止。不然它会一路烧到 max_steps。"""
+    loop = _loop_with_detect(make_mock(_same_result_turns(tool_turn, 10)),
+                             window=3)
+    events = await _collect(loop, "算")
+
+    assert isinstance(events[-1], RunError)
+    assert "结果" in events[-1].error, events[-1].error
+
+
+async def test_changing_results_are_never_flagged(make_mock, tool_turn, text_turn):
+    """结果每次都不同 —— 那是在推进，一个字都不该说。"""
+    client = make_mock([
+        tool_turn("calculator", '{"expression": "1+1"}', call_id="c1"),
+        tool_turn("calculator", '{"expression": "2+2"}', call_id="c2"),
+        tool_turn("calculator", '{"expression": "3+3"}', call_id="c3"),
+        tool_turn("calculator", '{"expression": "4+4"}', call_id="c4"),
+        text_turn("完"),
+    ])
+    loop = _loop_with_detect(client, window=3)
+    events = await _collect(loop, "算")
+    assert isinstance(events[-1], RunFinished)
+    assert sum(isinstance(e, ToolFinished) for e in events) == 4
+
+
+async def test_a_changed_result_resets_the_streak(make_mock, tool_turn, text_turn):
+    """中间有一次结果变了就重新计数 —— 「连续」必须真的是连续。
+
+    没有这一条，一次长会话里零散出现的相同结果会被攒起来误判。
+    """
+    client = make_mock([
+        tool_turn("calculator", '{"expression": "1+1"}', call_id="c1"),
+        tool_turn("calculator", '{"expression": "0+2"}', call_id="c2"),
+        tool_turn("calculator", '{"expression": "9+9"}', call_id="c3"),  # 结果变了
+        tool_turn("calculator", '{"expression": "4-2"}', call_id="c4"),
+        tool_turn("calculator", '{"expression": "6-4"}', call_id="c5"),
+        text_turn("完"),
+    ])
+    loop = _loop_with_detect(client, window=3)
+    events = await _collect(loop, "算")
+    assert isinstance(events[-1], RunFinished)
+    assert sum(isinstance(e, ToolFinished) for e in events) == 5
+
+
+async def test_result_stagnation_is_off_when_detection_is_off(
+        make_mock, tool_turn, text_turn):
+    """window<2 关掉整套检测，这一条也跟着关 —— 一个开关管一件事。"""
+    client = make_mock(_same_result_turns(tool_turn, 4) + [text_turn("完")])
+    loop = _loop_with_detect(client, window=0)
+    events = await _collect(loop, "算")
+    assert isinstance(events[-1], RunFinished)
